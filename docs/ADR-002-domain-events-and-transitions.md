@@ -1,29 +1,43 @@
+
 # ADR-002: Domain Events and Order State Transitions
 
 ## Status
 Accepted
 
 ## Context
-The Order Management system must control how an order moves through its approval workflow. Invalid state transitions must be rejected, and successful changes must be recorded as events and communicated through notifications.
+The Order Management system must enforce valid order state transitions, prevent invalid business operations, and record important changes as domain events. The domain model must remain independent of Spring, JPA, HTTP, and database adapters.
 
 ## Decision
-An order begins in the `DRAFT` state and follows these permitted transitions:
+An order begins in the `DRAFT` state and uses the following states:
 
-- `DRAFT` → `SUBMITTED`
-- `SUBMITTED` → `APPROVED`
-- `SUBMITTED` → `REJECTED`
+- `DRAFT`
+- `CONFIRMED`
+- `PAID`
+- `CANCELLED`
 
-The `Order` entity enforces these rules and throws an `IllegalStateException` when an invalid transition is attempted.
+The `Order` entity enforces the following business rules:
 
-After a successful transition, the application service saves the order, sends a notification through the notification port, and publishes an `OrderEvent` containing the order ID, current status, and occurrence time.
+- An order must contain at least one line before confirmation.
+- Each order line must have a positive whole-number quantity.
+- A cancelled order cannot be paid.
+- A paid order cannot return to the draft state.
+- The order total is calculated from immutable line prices and quantities.
 
-The application uses `OrderEventPublisher` and `TimeProvider` interfaces so that event publishing and time management remain independent of infrastructure implementations.
+The domain records important changes through the following events:
 
-The current infrastructure uses in-memory adapters for testing.
+- `OrderConfirmed`
+- `PaymentRecorded`
+- `OrderCancelled`
+
+The application service coordinates order operations, saves changes through the repository port, publishes domain events through `OrderEventPublisher`, and sends notifications through the notification port.
+
+The application layer uses interfaces such as `OrderRepository`, `OrderNotification`, `OrderEventPublisher`, and `TimeProvider` to keep application logic independent of infrastructure implementations.
+
+The infrastructure module provides in-memory adapters for testing. The domain module does not depend on Spring, JPA, HTTP, or database adapters.
 
 ## Consequences
-- Invalid order transitions are prevented by domain rules.
-- Successful transitions produce timestamped events.
-- Notifications and event publishing can be replaced with other implementations.
-- Automated tests can verify the workflow without an external database.
-- In-memory events are not durable; a production system would need reliable event storage and delivery.
+- Invalid order operations are rejected by domain rules.
+- Important order changes are represented by domain events.
+- Application logic can be tested without an external database.
+- Infrastructure implementations can be replaced without changing the core domain model.
+- In-memory storage and event publishing are suitable for testing but do not provide durable production persistence or guaranteed event delivery.
