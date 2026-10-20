@@ -3,6 +3,7 @@ package com.rabtech.order.application;
 
 import com.rabtech.order.domain.Order;
 import com.rabtech.order.domain.OrderEvent;
+import com.rabtech.order.domain.OrderId;
 
 public class OrderWorkflowService {
 
@@ -16,7 +17,6 @@ public class OrderWorkflowService {
             OrderNotification notification,
             TimeProvider timeProvider,
             OrderEventPublisher eventPublisher) {
-
         this.repository = repository;
         this.notification = notification;
         this.timeProvider = timeProvider;
@@ -24,39 +24,27 @@ public class OrderWorkflowService {
     }
 
     public Order createOrder() {
-        Order order = new Order();
+        Order order = new Order(OrderId.generate());
         repository.save(order);
         return order;
     }
 
-    public Order submitOrder(String orderId) {
+    public Order confirmOrder(String orderId) {
         Order order = getOrder(orderId);
-        order.submit();
-        return recordChange(order, "SUBMITTED");
+        order.confirm();
+        return recordChange(order);
     }
 
-    public Order approveOrder(String orderId) {
+    public Order recordPayment(String orderId) {
         Order order = getOrder(orderId);
-        order.approve();
-        return recordChange(order, "APPROVED");
+        order.recordPayment();
+        return recordChange(order);
     }
 
-    public Order rejectOrder(String orderId) {
+    public Order cancelOrder(String orderId) {
         Order order = getOrder(orderId);
-        order.reject();
-        return recordChange(order, "REJECTED");
-    }
-
-    public Order handle(SubmitOrderCommand command) {
-        return submitOrder(command.orderId());
-    }
-
-    public Order handle(ApproveOrderCommand command) {
-        return approveOrder(command.orderId());
-    }
-
-    public Order handle(RejectOrderCommand command) {
-        return rejectOrder(command.orderId());
+        order.cancel();
+        return recordChange(order);
     }
 
     private Order getOrder(String orderId) {
@@ -66,25 +54,25 @@ public class OrderWorkflowService {
                                 "Order not found: " + orderId));
     }
 
-    private Order recordChange(Order order, String action) {
+    private Order recordChange(Order order) {
         repository.save(order);
 
-        switch (action) {
-            case "SUBMITTED" ->
-                    notification.notifySubmitted(order);
-            case "APPROVED" ->
-                    notification.notifyApproved(order);
-            case "REJECTED" ->
-                    notification.notifyRejected(order);
-            default -> throw new IllegalArgumentException(
-                    "Unknown order action: " + action);
+        int eventCount = order.getDomainEvents().size();
+
+        if (eventCount > 0) {
+            OrderEvent latestEvent =
+                    order.getDomainEvents().get(eventCount - 1);
+            eventPublisher.publish(latestEvent);
         }
 
-        eventPublisher.publish(new OrderEvent(
-                order.getId(),
-                order.getStatus(),
-                timeProvider.now()
-        ));
+        switch (order.getStatus()) {
+            case CONFIRMED -> notification.notifyApproved(order);
+            case PAID -> notification.notifySubmitted(order);
+            case CANCELLED -> notification.notifyRejected(order);
+            default -> {
+                // No notification is needed for DRAFT.
+            }
+        }
 
         return order;
     }

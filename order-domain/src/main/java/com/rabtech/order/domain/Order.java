@@ -1,52 +1,92 @@
 
 package com.rabtech.order.domain;
 
+import java.math.BigDecimal;
+import java.util.ArrayList;
+import java.util.Collections;
+import java.util.List;
+import java.util.Objects;
+
 public class Order {
 
     private final OrderId id;
-    private OrderStatus status;
+    private final List<OrderLine> lines = new ArrayList<>();
+    private final List<OrderEvent> domainEvents = new ArrayList<>();
 
-    public Order() {
-        this.id = OrderId.generate();
-        this.status = OrderStatus.DRAFT;
+    private OrderStatus status = OrderStatus.DRAFT;
+
+    public Order(OrderId id) {
+        this.id = Objects.requireNonNull(id, "Order ID cannot be null");
     }
 
-    public String getId() {
-    return id.value();
-}
-
-public OrderId getOrderId() {
-    return id;
-}
+    public OrderId getId() {
+        return id;
+    }
 
     public OrderStatus getStatus() {
         return status;
     }
 
-    public void submit() {
+    public List<OrderLine> getLines() {
+        return Collections.unmodifiableList(lines);
+    }
+
+    public List<OrderEvent> getDomainEvents() {
+        return Collections.unmodifiableList(domainEvents);
+    }
+
+    public void addLine(OrderLine line) {
         if (status != OrderStatus.DRAFT) {
             throw new IllegalStateException(
-                "Only draft orders can be submitted."
+                "Lines can only be added while the order is in DRAFT"
             );
         }
-        status = OrderStatus.SUBMITTED;
+
+        lines.add(Objects.requireNonNull(line, "Order line cannot be null"));
     }
 
-    public void approve() {
-        if (status != OrderStatus.SUBMITTED) {
-            throw new IllegalStateException(
-                "Only submitted orders can be approved."
-            );
-        }
-        status = OrderStatus.APPROVED;
+    public BigDecimal getTotal() {
+        return lines.stream()
+            .map(OrderLine::getTotal)
+            .reduce(BigDecimal.ZERO, BigDecimal::add);
     }
 
-    public void reject() {
-        if (status != OrderStatus.SUBMITTED) {
+    public void confirm() {
+        if (status != OrderStatus.DRAFT) {
             throw new IllegalStateException(
-                "Only submitted orders can be rejected."
+                "Only a draft order can be confirmed"
             );
         }
-        status = OrderStatus.REJECTED;
+
+        if (lines.isEmpty()) {
+            throw new IllegalStateException(
+                "An order must contain at least one line before confirmation"
+            );
+        }
+
+        status = OrderStatus.CONFIRMED;
+        domainEvents.add(new OrderConfirmed(id));
+    }
+
+    public void recordPayment() {
+        if (status != OrderStatus.CONFIRMED) {
+            throw new IllegalStateException(
+                "Only a confirmed order can be paid"
+            );
+        }
+
+        status = OrderStatus.PAID;
+        domainEvents.add(new PaymentRecorded(id));
+    }
+
+    public void cancel() {
+        if (status == OrderStatus.CANCELLED) {
+            throw new IllegalStateException(
+                "Order is already cancelled"
+            );
+        }
+
+        status = OrderStatus.CANCELLED;
+        domainEvents.add(new OrderCancelled(id));
     }
 }

@@ -1,15 +1,17 @@
 
 package com.rabtech.order.infrastructure;
 
-import com.rabtech.order.application.ApproveOrderCommand;
 import com.rabtech.order.application.OrderWorkflowService;
-import com.rabtech.order.application.RejectOrderCommand;
-import com.rabtech.order.application.SubmitOrderCommand;
 import com.rabtech.order.domain.Order;
+import com.rabtech.order.domain.OrderCancelled;
+import com.rabtech.order.domain.OrderConfirmed;
+import com.rabtech.order.domain.OrderLine;
 import com.rabtech.order.domain.OrderStatus;
+import com.rabtech.order.domain.PaymentRecorded;
 
 import org.junit.jupiter.api.Test;
 
+import java.math.BigDecimal;
 import java.time.Instant;
 
 import static org.junit.jupiter.api.Assertions.*;
@@ -17,24 +19,17 @@ import static org.junit.jupiter.api.Assertions.*;
 class OrderWorkflowServiceTest {
 
     @Test
-    void workflowShouldSaveOrderAndPublishEvents() {
+    void workflowShouldSaveOrderAndPublishRequiredEvents() {
         InMemoryOrderRepository repository =
                 new InMemoryOrderRepository();
-
-        InMemoryOrderNotification notification =
-                new InMemoryOrderNotification();
-
-        InMemoryTimeProvider timeProvider =
-                new InMemoryTimeProvider(
-                        Instant.parse("2026-10-20T10:00:00Z"));
 
         InMemoryOrderEventPublisher eventPublisher =
                 new InMemoryOrderEventPublisher();
 
         OrderWorkflowService service = new OrderWorkflowService(
                 repository,
-                notification,
-                timeProvider,
+                new InMemoryOrderNotification(),
+                new InMemoryTimeProvider(Instant.EPOCH),
                 eventPublisher
         );
 
@@ -42,38 +37,61 @@ class OrderWorkflowServiceTest {
 
         assertEquals(OrderStatus.DRAFT, order.getStatus());
 
-        service.handle(new SubmitOrderCommand(order.getId()));
-        service.handle(new ApproveOrderCommand(order.getId()));
+        order.addLine(new OrderLine(
+                "P1", 2, new BigDecimal("10.00")));
 
-        assertEquals(OrderStatus.APPROVED, order.getStatus());
+        service.confirmOrder(order.getId().value());
 
-        assertTrue(repository.findById(order.getId()).isPresent());
+        assertEquals(OrderStatus.CONFIRMED, order.getStatus());
+        assertTrue(repository.findById(
+                order.getId().value()).isPresent());
+        assertEquals(1, eventPublisher.getEvents().size());
+        assertTrue(eventPublisher.getEvents().get(0)
+                instanceof OrderConfirmed);
 
+        service.recordPayment(order.getId().value());
+
+        assertEquals(OrderStatus.PAID, order.getStatus());
         assertEquals(2, eventPublisher.getEvents().size());
-        assertEquals(
-                OrderStatus.SUBMITTED,
-                eventPublisher.getEvents().get(0).status()
-        );
-        assertEquals(
-                OrderStatus.APPROVED,
-                eventPublisher.getEvents().get(1).status()
+        assertTrue(eventPublisher.getEvents().get(1)
+                instanceof PaymentRecorded);
+    }
+
+    @Test
+    void cancelledOrderCannotBePaid() {
+        InMemoryOrderRepository repository =
+                new InMemoryOrderRepository();
+
+        InMemoryOrderEventPublisher eventPublisher =
+                new InMemoryOrderEventPublisher();
+
+        OrderWorkflowService service = new OrderWorkflowService(
+                repository,
+                new InMemoryOrderNotification(),
+                new InMemoryTimeProvider(Instant.EPOCH),
+                eventPublisher
         );
 
-        assertEquals(2, notification.getNotifications().size());
+        Order order = service.createOrder();
 
-        assertEquals(
-                Instant.parse("2026-10-20T10:00:00Z"),
-                eventPublisher.getEvents().get(1).occurredAt()
-        );
+        service.cancelOrder(order.getId().value());
+
+        assertEquals(OrderStatus.CANCELLED, order.getStatus());
+        assertEquals(1, eventPublisher.getEvents().size());
+        assertTrue(eventPublisher.getEvents().get(0)
+                instanceof OrderCancelled);
+
+        assertThrows(
+                IllegalStateException.class,
+                () -> service.recordPayment(order.getId().value()));
+
+        assertEquals(1, eventPublisher.getEvents().size());
     }
 
     @Test
     void unknownOrderShouldBeRejected() {
-        InMemoryOrderRepository repository =
-                new InMemoryOrderRepository();
-
         OrderWorkflowService service = new OrderWorkflowService(
-                repository,
+                new InMemoryOrderRepository(),
                 new InMemoryOrderNotification(),
                 new InMemoryTimeProvider(Instant.EPOCH),
                 new InMemoryOrderEventPublisher()
@@ -81,28 +99,6 @@ class OrderWorkflowServiceTest {
 
         assertThrows(
                 IllegalArgumentException.class,
-                () -> service.handle(
-                        new SubmitOrderCommand("missing-order"))
-        );
-    }
-
-    @Test
-    void submittedOrderCanBeRejectedUsingCommand() {
-        InMemoryOrderRepository repository =
-                new InMemoryOrderRepository();
-
-        OrderWorkflowService service = new OrderWorkflowService(
-                repository,
-                new InMemoryOrderNotification(),
-                new InMemoryTimeProvider(Instant.EPOCH),
-                new InMemoryOrderEventPublisher()
-        );
-
-        Order order = service.createOrder();
-
-        service.handle(new SubmitOrderCommand(order.getId()));
-        service.handle(new RejectOrderCommand(order.getId()));
-
-        assertEquals(OrderStatus.REJECTED, order.getStatus());
+                () -> service.confirmOrder("missing-order"));
     }
 }
